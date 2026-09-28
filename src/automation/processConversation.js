@@ -27,7 +27,18 @@ function processConversation(waMessagePayload, masterRows) {
   if (msg?.type === 'text') {
     rawMessage = msg.text?.body || '';
   } else if (msg?.type === 'interactive') {
-    rawMessage = msg.interactive?.button_reply?.id || '';
+    if (msg.interactive?.button_reply) {
+      rawMessage = msg.interactive.button_reply.id || '';
+    } else if (msg.interactive?.list_reply) {
+      rawMessage = msg.interactive.list_reply.id || '';
+    } else if (msg.interactive?.nfm_reply) {
+      try {
+        const flowResponse = JSON.parse(msg.interactive.nfm_reply.response_json || '{}');
+        rawMessage = flowResponse.selected_date || flowResponse.loading_date || flowResponse.date || '';
+      } catch {
+        rawMessage = msg.interactive.nfm_reply.response_json || '';
+      }
+    }
   }
 
   if (typeof rawMessage === 'object') {

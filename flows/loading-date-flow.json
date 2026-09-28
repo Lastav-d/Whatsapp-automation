@@ -1,0 +1,51 @@
+{
+  "version": "6.0",
+  "screens": [
+    {
+      "id": "DATE_SELECTION",
+      "title": "Select Loading Date",
+      "terminal": true,
+      "data": {
+        "min_date": {
+          "type": "string",
+          "__example__": "2026-09-28"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "📅 Select Loading Date"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "Traket Transport Logistics"
+          },
+          {
+            "type": "TextBody",
+            "text": "Please choose your preferred date for goods loading from the calendar below:"
+          },
+          {
+            "type": "DatePicker",
+            "name": "loading_date",
+            "label": "Loading Date",
+            "required": true,
+            "min-date": "${data.min_date}",
+            "helper-text": "Select today or a future date"
+          },
+          {
+            "type": "Footer",
+            "label": "Confirm Date",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "selected_date": "${form.loading_date}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

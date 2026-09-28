@@ -20,6 +20,7 @@ module.exports = {
     accessToken: required('WHATSAPP_ACCESS_TOKEN'),
     phoneNumberId: required('WHATSAPP_PHONE_NUMBER_ID'),
     graphApiVersion: process.env.WHATSAPP_GRAPH_API_VERSION || 'v20.0',
+    flowId: process.env.WHATSAPP_FLOW_ID || '',
   },
   supabase: {
     url: required('SUPABASE_URL'),
