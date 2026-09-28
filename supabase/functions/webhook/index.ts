@@ -17,6 +17,32 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 // =====================================================================
 // WHATSAPP API HELPERS
 // =====================================================================
+async function sendWhatsAppTypingIndicator(to: string, messageId?: string) {
+  if (!messageId) return;
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: messageId,
+        typing_indicator: {
+          type: "text",
+        },
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    console.log("Typing indicator status:", { status: res.status, data });
+  } catch (err) {
+    console.warn("Typing indicator fetch failed (non-blocking):", err);
+  }
+}
+
 async function sendWhatsAppText(to: string, text: string) {
   const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
   console.log(`Sending WhatsApp reply to ${to} via Phone Number ID: ${WHATSAPP_PHONE_NUMBER_ID}`);
@@ -206,6 +232,7 @@ function processConversation(chat: any, masterRows: any[]) {
   const tempoSizeMap: Record<string, string> = { "1": "7 Ft", "2": "8 Ft", "3": "9 Ft", "4": "14 Ft", "5": "17 Ft" };
   const truckTypeMap: Record<string, string> = { "1": "19 Ft Open", "2": "22 Ft Open", "3": "24 Ft Open", "4": "32 Ft Open" };
   const containerTypeMap: Record<string, string> = { "1": "20 Ft Close Body", "2": "24 Ft Close Body", "3": "32 Ft SXL Close Body", "4": "32 Ft MXL Close Body" };
+  const trailerTypeMap: Record<string, string> = { "1": "40 Ft High Bed", "2": "40 Ft Low Bed", "3": "Semi Low Bed", "4": "Hydraulic Axle" };
 
   function validateLoadingDate(dateStr: string): { valid: boolean; reason?: "format" | "past" } {
     const match = dateStr.trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
@@ -240,12 +267,174 @@ function processConversation(chat: any, masterRows: any[]) {
   let response = "";
   let flowType = row.flowType || row.flow_type || "";
 
+  // =====================================================================
+  // UNIVERSAL BACK / UNDO HANDLER
+  // =====================================================================
+  const isBackCommand = ["back", "b", "undo", "prev", "previous", "0", "cta_back"].includes(lowerMessage);
+
+  if (isBackCommand) {
+    if (state === "loading_pin" || state === "provider_vehicle_type") {
+      state = "main_menu";
+      flowType = "";
+      response =
+        "🙏 *Welcome to Traket Transport* 🚛\n\n" +
+        "👉 Please select your requirement:\n\n" +
+        "1️⃣ Book a Vehicle (Customer)\n" +
+        "2️⃣ Provide Vehicle (Transporter)\n" +
+        "3️⃣ Support\n\n" +
+        "Reply with *1, 2 or 3*";
+    }
+    // Customer Booking Flow - Step Back
+    else if (state === "unloading_pin") {
+      delete data.loadingPin;
+      state = "loading_pin";
+      response = "📍 Enter *Loading Pincode* (6 digits):\n(e.g., 400001)\n\n_(Reply *Back* to return to Main Menu)_";
+    } else if (state === "cargo_type") {
+      delete data.unloadingPin;
+      state = "unloading_pin";
+      response = "📍 Enter *Unloading Pincode* (6 digits):\n(e.g., 560001)\n\n_(Reply *Back* to edit Loading Pincode)_";
+    } else if (state === "vehicle_type") {
+      delete data.cargoType;
+      state = "cargo_type";
+      response = "📦 Select *Cargo Type*:\n1️⃣ Domestic\n2️⃣ Import\n3️⃣ Export\n\nReply with *1, 2 or 3*\n\n_(Reply *Back* to edit Unloading Pincode)_";
+    } else if (["tempo_type", "truck_type", "container_type"].includes(state)) {
+      delete data.vehicleType;
+      state = "vehicle_type";
+      response = "🚛 Select *Vehicle Type*:\n1️⃣ Tempo\n2️⃣ Truck\n3️⃣ Container\n4️⃣ Trailer / ODC\n\nReply with *1, 2, 3 or 4*\n\n_(Reply *Back* to edit Cargo Type)_";
+    } else if (state === "material") {
+      if (data.vehicleType === "Trailer / ODC") {
+        delete data.vehicleType;
+        delete data.vehicleSubType;
+        state = "vehicle_type";
+        response = "🚛 Select *Vehicle Type*:\n1️⃣ Tempo\n2️⃣ Truck\n3️⃣ Container\n4️⃣ Trailer / ODC\n\nReply with *1, 2, 3 or 4*\n\n_(Reply *Back* to edit Cargo Type)_";
+      } else if (data.vehicleType === "Tempo") {
+        delete data.vehicleSubType;
+        state = "tempo_type";
+        response = "Select *Tempo Size*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft\n\nReply with *1 - 5*\n\n_(Reply *Back* to edit Vehicle Type)_";
+      } else if (data.vehicleType === "Truck") {
+        delete data.vehicleSubType;
+        state = "truck_type";
+        response = "Select *Truck Type*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open\n\nReply with *1 - 4*\n\n_(Reply *Back* to edit Vehicle Type)_";
+      } else if (data.vehicleType === "Container") {
+        delete data.vehicleSubType;
+        state = "container_type";
+        response = "Select *Container Type*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body\n\nReply with *1 - 4*\n\n_(Reply *Back* to edit Vehicle Type)_";
+      } else {
+        state = "vehicle_type";
+        response = "🚛 Select *Vehicle Type*:\n1️⃣ Tempo\n2️⃣ Truck\n3️⃣ Container\n4️⃣ Trailer / ODC\n\nReply with *1, 2, 3 or 4*";
+      }
+    } else if (state === "loading_date") {
+      delete data.material;
+      state = "material";
+      response = "📝 Enter *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)\n\n_(Reply *Back* to edit Vehicle Size)_";
+    } else if (state === "loading_time") {
+      delete data.loadingDate;
+      state = "loading_date";
+      response = "📅 Enter *Loading Date* (DD/MM/YYYY):\n(e.g., 25/09/2026)\n\n_(Reply *Back* to edit Material Description)_";
+    } else if (state === "company") {
+      delete data.loadingTime;
+      state = "loading_time";
+      response =
+        "⏰ Select or Enter *Loading Time*:\n\n" +
+        "1️⃣ Morning (06:00 AM - 12:00 PM)\n" +
+        "2️⃣ Afternoon (12:00 PM - 04:00 PM)\n" +
+        "3️⃣ Evening (04:00 PM - 09:00 PM)\n" +
+        "4️⃣ Night (09:00 PM - 06:00 AM)\n" +
+        "5️⃣ Any Time (Full Day Flexible)\n\n" +
+        "Reply with *1 - 5* or type a specific time (e.g., 10:30 AM, 4 PM)\n\n_(Reply *Back* to edit Loading Date)_";
+    } else if (state === "contact_name") {
+      delete data.company;
+      state = "company";
+      response = "🏢 Enter your *Company Name*:\n(or type *NA* if individual)\n\n_(Reply *Back* to edit Loading Time)_";
+    } else if (state === "email") {
+      delete data.contactName;
+      state = "contact_name";
+      response = "👤 Enter *Contact Person Name*:\n\n_(Reply *Back* to edit Company Name)_";
+    }
+    // Transporter Provider Flow - Step Back
+    else if (["provider_tempo_size", "provider_truck_size", "provider_container_size", "provider_trailer_size"].includes(state)) {
+      delete data.provider_vehicleType;
+      state = "provider_vehicle_type";
+      response =
+        "🚛 *Transporter Vehicle Registration*\n\n" +
+        "Select Vehicle Category:\n" +
+        "1️⃣ Tempo\n" +
+        "2️⃣ Open Truck\n" +
+        "3️⃣ Container\n" +
+        "4️⃣ Trailer / ODC\n\n" +
+        "Reply with *1, 2, 3 or 4*\n\n_(Reply *Back* to return to Main Menu)_";
+    } else if (state === "provider_custom_size") {
+      delete data.provider_vehicleSize;
+      if (data.provider_vehicleType === "Tempo") {
+        state = "provider_tempo_size";
+        response = "🚚 Select *Tempo Size*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft\n6️⃣ Other\n\nReply with *1 - 6*";
+      } else if (data.provider_vehicleType === "Open Truck") {
+        state = "provider_truck_size";
+        response = "🚛 Select *Truck Size*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open\n5️⃣ Other\n\nReply with *1 - 5*";
+      } else if (data.provider_vehicleType === "Container") {
+        state = "provider_container_size";
+        response = "📦 Select *Container Size*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body\n5️⃣ Other\n\nReply with *1 - 5*";
+      } else if (data.provider_vehicleType === "Trailer / ODC") {
+        state = "provider_trailer_size";
+        response = "🏗️ Select *Trailer / ODC Type*:\n1️⃣ 40 Ft High Bed\n2️⃣ 40 Ft Low Bed\n3️⃣ Semi Low Bed\n4️⃣ Hydraulic Axle\n5️⃣ Other\n\nReply with *1 - 5*";
+      } else {
+        state = "provider_vehicle_type";
+        response = "Select Vehicle Category:\n1️⃣ Tempo\n2️⃣ Open Truck\n3️⃣ Container\n4️⃣ Trailer / ODC";
+      }
+    } else if (state === "provider_vehicle_number") {
+      delete data.provider_vehicleSize;
+      if (data.provider_vehicleType === "Tempo") {
+        state = "provider_tempo_size";
+        response = "🚚 Select *Tempo Size*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft\n6️⃣ Other\n\nReply with *1 - 6*\n\n_(Reply *Back* to edit Category)_";
+      } else if (data.provider_vehicleType === "Open Truck") {
+        state = "provider_truck_size";
+        response = "🚛 Select *Truck Size*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open\n5️⃣ Other\n\nReply with *1 - 5*\n\n_(Reply *Back* to edit Category)_";
+      } else if (data.provider_vehicleType === "Container") {
+        state = "provider_container_size";
+        response = "📦 Select *Container Size*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body\n5️⃣ Other\n\nReply with *1 - 5*\n\n_(Reply *Back* to edit Category)_";
+      } else if (data.provider_vehicleType === "Trailer / ODC") {
+        state = "provider_trailer_size";
+        response = "🏗️ Select *Trailer / ODC Type*:\n1️⃣ 40 Ft High Bed\n2️⃣ 40 Ft Low Bed\n3️⃣ Semi Low Bed\n4️⃣ Hydraulic Axle\n5️⃣ Other\n\nReply with *1 - 5*\n\n_(Reply *Back* to edit Category)_";
+      } else {
+        state = "provider_vehicle_type";
+        response = "Select Vehicle Category:\n1️⃣ Tempo\n2️⃣ Open Truck\n3️⃣ Container\n4️⃣ Trailer / ODC";
+      }
+    } else if (state === "provider_driver_name") {
+      delete data.provider_vehicleNumber;
+      state = "provider_vehicle_number";
+      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)\n\n_(Reply *Back* to edit Vehicle Size)_";
+    } else if (state === "provider_capacity") {
+      delete data.provider_driverName;
+      state = "provider_driver_name";
+      response = "👤 Enter *Driver / Owner Name*:\n\n_(Reply *Back* to edit Vehicle Number)_";
+    } else if (state === "provider_routes") {
+      delete data.provider_capacity;
+      state = "provider_capacity";
+      response = "⚖️ Enter *Payload Capacity* (in Tons / Kgs):\n(e.g., 9 Tons or 2500 Kgs)\n\n_(Reply *Back* to edit Driver Name)_";
+    } else {
+      state = "main_menu";
+      response = "👋 Welcome to *Traket Transport*!\n\nType *Hi* to see the main menu options.";
+    }
+
+    return {
+      user_id: row.user_id || `${phone}_${Date.now()}`,
+      phone: phone,
+      state: state,
+      updated_at: new Date().toISOString(),
+      response: response,
+      flowType: flowType,
+      data: JSON.stringify(data),
+    };
+  }
+
+  // =====================================================================
   // 1. MAIN MENU
+  // =====================================================================
   if (state === "main_menu") {
     if (message === "1") {
       state = "loading_pin";
       flowType = "book";
-      response = "📍 Enter *Loading Pincode* (6 digits):\n(e.g., 400001)";
+      response = "📍 Enter *Loading Pincode* (6 digits):\n(e.g., 400001)\n\n_(Reply *Back* to return to Main Menu)_";
     } else if (message === "2") {
       state = "provider_vehicle_type";
       flowType = "provider";
@@ -256,7 +445,7 @@ function processConversation(chat: any, masterRows: any[]) {
         "2️⃣ Open Truck\n" +
         "3️⃣ Container\n" +
         "4️⃣ Trailer / ODC\n\n" +
-        "Reply with *1, 2, 3 or 4*";
+        "Reply with *1, 2, 3 or 4*\n\n_(Reply *Back* to return to Main Menu)_";
     } else if (message === "3") {
       state = "support";
       flowType = "support";
@@ -271,78 +460,80 @@ function processConversation(chat: any, masterRows: any[]) {
     }
   }
 
+  // =====================================================================
   // 2. BOOK VEHICLE FLOW
+  // =====================================================================
   else if (state === "loading_pin") {
     if (/^\d{6}$/.test(message)) {
       data.loadingPin = message;
       state = "unloading_pin";
-      response = "📍 Enter *Unloading Pincode* (6 digits):\n(e.g., 560001)";
+      response = "📍 Enter *Unloading Pincode* (6 digits):\n(e.g., 560001)\n\n_(Reply *Back* to edit Loading Pincode)_";
     } else {
-      response = "❌ Invalid pincode. Please enter a valid *6-digit* Loading Pincode:";
+      response = "❌ Invalid pincode. Please enter a valid *6-digit* Loading Pincode:\n(e.g., 400001)\n\n_(Reply *Back* to return to Main Menu)_";
     }
   } else if (state === "unloading_pin") {
     if (/^\d{6}$/.test(message)) {
       data.unloadingPin = message;
       state = "cargo_type";
-      response = "📦 Select *Cargo Type*:\n1️⃣ Domestic\n2️⃣ Import\n3️⃣ Export\n\nReply with *1, 2 or 3*";
+      response = "📦 Select *Cargo Type*:\n1️⃣ Domestic\n2️⃣ Import\n3️⃣ Export\n\nReply with *1, 2 or 3*\n\n_(Reply *Back* to edit Unloading Pincode)_";
     } else {
-      response = "❌ Invalid pincode. Please enter a valid *6-digit* Unloading Pincode:";
+      response = "❌ Invalid pincode. Please enter a valid *6-digit* Unloading Pincode:\n(e.g., 560001)\n\n_(Reply *Back* to edit Loading Pincode)_";
     }
   } else if (state === "cargo_type") {
     if (["1", "2", "3"].includes(message)) {
       data.cargoType = cargoTypeMap[message];
       state = "vehicle_type";
-      response = "🚛 Select *Vehicle Type*:\n1️⃣ Tempo\n2️⃣ Truck\n3️⃣ Container\n4️⃣ Trailer / ODC\n\nReply with *1, 2, 3 or 4*";
+      response = "🚛 Select *Vehicle Type*:\n1️⃣ Tempo\n2️⃣ Truck\n3️⃣ Container\n4️⃣ Trailer / ODC\n\nReply with *1, 2, 3 or 4*\n\n_(Reply *Back* to edit Cargo Type)_";
     } else {
-      response = "❌ Invalid choice. Reply with *1* (Domestic), *2* (Import), or *3* (Export):";
+      response = "❌ Invalid choice. Reply with *1* (Domestic), *2* (Import), or *3* (Export):\n\n_(Reply *Back* to edit Unloading Pincode)_";
     }
   } else if (state === "vehicle_type") {
     if (message === "1") {
       data.vehicleType = "Tempo";
       state = "tempo_type";
-      response = "Select *Tempo Size*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft\n\nReply with *1 - 5*";
+      response = "Select *Tempo Size*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft\n\nReply with *1 - 5*\n\n_(Reply *Back* to edit Vehicle Type)_";
     } else if (message === "2") {
       data.vehicleType = "Truck";
       state = "truck_type";
-      response = "Select *Truck Type*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open\n\nReply with *1 - 4*";
+      response = "Select *Truck Type*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open\n\nReply with *1 - 4*\n\n_(Reply *Back* to edit Vehicle Type)_";
     } else if (message === "3") {
       data.vehicleType = "Container";
       state = "container_type";
-      response = "Select *Container Type*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body\n\nReply with *1 - 4*";
+      response = "Select *Container Type*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body\n\nReply with *1 - 4*\n\n_(Reply *Back* to edit Vehicle Type)_";
     } else if (message === "4") {
       data.vehicleType = "Trailer / ODC";
       data.vehicleSubType = "Trailer";
       state = "material";
-      response = "📝 Enter *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)";
+      response = "📝 Enter *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)\n\n_(Reply *Back* to edit Vehicle Type)_";
     } else {
-      response = "❌ Invalid choice. Reply with *1, 2, 3 or 4*";
+      response = "❌ Invalid choice. Reply with *1, 2, 3 or 4*:\n\n_(Reply *Back* to edit Cargo Type)_";
     }
   } else if (state === "tempo_type") {
     if (tempoSizeMap[message]) {
       data.vehicleType = "Tempo";
       data.vehicleSubType = tempoSizeMap[message];
       state = "material";
-      response = "📝 Enter *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)";
+      response = "📝 Enter *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)\n\n_(Reply *Back* to edit Tempo Size)_";
     } else {
-      response = "❌ Invalid choice. Reply with *1 - 5*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft";
+      response = "❌ Invalid choice. Reply with *1 - 5*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft\n\n_(Reply *Back* to edit Vehicle Type)_";
     }
   } else if (state === "truck_type") {
     if (truckTypeMap[message]) {
       data.vehicleType = "Truck";
       data.vehicleSubType = truckTypeMap[message];
       state = "material";
-      response = "📝 Enter *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)";
+      response = "📝 Enter *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)\n\n_(Reply *Back* to edit Truck Type)_";
     } else {
-      response = "❌ Invalid choice. Reply with *1 - 4*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open";
+      response = "❌ Invalid choice. Reply with *1 - 4*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open\n\n_(Reply *Back* to edit Vehicle Type)_";
     }
   } else if (state === "container_type") {
     if (containerTypeMap[message]) {
       data.vehicleType = "Container";
       data.vehicleSubType = containerTypeMap[message];
       state = "material";
-      response = "📝 Enter *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)";
+      response = "📝 Enter *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)\n\n_(Reply *Back* to edit Container Type)_";
     } else {
-      response = "❌ Invalid choice. Reply with *1 - 4*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body";
+      response = "❌ Invalid choice. Reply with *1 - 4*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body\n\n_(Reply *Back* to edit Vehicle Type)_";
     }
   } else if (state === "material") {
     const hasLetters = /[a-zA-Z]/.test(message);
@@ -350,9 +541,9 @@ function processConversation(chat: any, masterRows: any[]) {
     if (hasLetters && isValidLength) {
       data.material = message.trim();
       state = "loading_date";
-      response = "📅 Enter *Loading Date* (DD/MM/YYYY):\n(e.g., 25/09/2026)";
+      response = "📅 Enter *Loading Date* (DD/MM/YYYY):\n(e.g., 25/09/2026)\n\n_(Reply *Back* to edit Material Description)_";
     } else {
-      response = "❌ Invalid description. Please enter a valid *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)";
+      response = "❌ Invalid description. Please enter a valid *Material / Goods Description*:\n(e.g., Industrial machinery, Textiles, FMCG)\n\n_(Reply *Back* to edit Vehicle Size)_";
     }
   } else if (state === "loading_date") {
     const dateCheck = validateLoadingDate(message);
@@ -366,11 +557,11 @@ function processConversation(chat: any, masterRows: any[]) {
         "3️⃣ Evening (04:00 PM - 09:00 PM)\n" +
         "4️⃣ Night (09:00 PM - 06:00 AM)\n" +
         "5️⃣ Any Time (Full Day Flexible)\n\n" +
-        "Reply with *1 - 5* or type a specific time (e.g., 10:30 AM, 4 PM)";
+        "Reply with *1 - 5* or type a specific time (e.g., 10:30 AM, 4 PM)\n\n_(Reply *Back* to edit Loading Date)_";
     } else if (dateCheck.reason === "past") {
-      response = "❌ Loading date cannot be in the past.\n\nPlease enter today's date or a future date in DD/MM/YYYY format:\n(e.g., 25/09/2026)";
+      response = "❌ Loading date cannot be in the past.\n\nPlease enter today's date or a future date in DD/MM/YYYY format:\n(e.g., 25/09/2026)\n\n_(Reply *Back* to edit Material Description)_";
     } else {
-      response = "❌ Invalid date format.\n\nPlease enter a valid date in DD/MM/YYYY format:\n(e.g., 25/09/2026)";
+      response = "❌ Invalid date format.\n\nPlease enter a valid date in DD/MM/YYYY format:\n(e.g., 25/09/2026)\n\n_(Reply *Back* to edit Material Description)_";
     }
   } else if (state === "loading_time") {
     const timeMap: Record<string, string> = {
@@ -383,22 +574,22 @@ function processConversation(chat: any, masterRows: any[]) {
     if (timeMap[message]) {
       data.loadingTime = timeMap[message];
       state = "company";
-      response = "🏢 Enter your *Company Name*:\n(or type *NA* if individual)";
+      response = "🏢 Enter your *Company Name*:\n(or type *NA* if individual)\n\n_(Reply *Back* to edit Loading Time)_";
     } else if (message.trim().length >= 2) {
       data.loadingTime = message.trim();
       state = "company";
-      response = "🏢 Enter your *Company Name*:\n(or type *NA* if individual)";
+      response = "🏢 Enter your *Company Name*:\n(or type *NA* if individual)\n\n_(Reply *Back* to edit Loading Time)_";
     } else {
-      response = "❌ Invalid time.\n\nPlease reply with *1 - 5* or type a valid time (e.g., 10:30 AM, Morning, 4 PM):";
+      response = "❌ Invalid time.\n\nPlease reply with *1 - 5* or type a valid time (e.g., 10:30 AM, Morning, 4 PM):\n\n_(Reply *Back* to edit Loading Date)_";
     }
   } else if (state === "company") {
     data.company = message;
     state = "contact_name";
-    response = "👤 Enter *Contact Person Name*:";
+    response = "👤 Enter *Contact Person Name*:\n\n_(Reply *Back* to edit Company Name)_";
   } else if (state === "contact_name") {
     data.contactName = message;
     state = "email";
-    response = "📧 Enter your *Email Address*:\n(or type *Skip*)";
+    response = "📧 Enter your *Email Address*:\n(or type *Skip*)\n\n_(Reply *Back* to edit Contact Name)_";
   } else if (state === "email") {
     const isSkip = ["skip", "na", "n/a"].includes(lowerMessage);
     const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
@@ -417,28 +608,30 @@ function processConversation(chat: any, masterRows: any[]) {
         (data.email ? `📧 *Email:* ${data.email}\n\n` : "\n") +
         "Our team is finding the best quote and will contact you shortly! 🚛💨";
     } else {
-      response = "❌ Invalid email format.\n\nPlease enter a valid email address (e.g., rahul@gmail.com, info@company.co.in)\nor type *Skip*:";
+      response = "❌ Invalid email format.\n\nPlease enter a valid email address (e.g., rahul@gmail.com, info@company.co.in)\nor type *Skip*:\n\n_(Reply *Back* to edit Contact Name)_";
     }
   }
 
+  // =====================================================================
   // 3. PROVIDE VEHICLE FLOW
+  // =====================================================================
   else if (state === "provider_vehicle_type") {
     if (message === "1") {
       data.provider_vehicleType = "Tempo";
       state = "provider_tempo_size";
-      response = "🚚 Select *Tempo Size*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft\n6️⃣ Other (Any other dimension)\n\nReply with *1 - 6*";
+      response = "🚚 Select *Tempo Size*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft\n6️⃣ Other (Any other dimension)\n\nReply with *1 - 6*\n\n_(Reply *Back* to edit Category)_";
     } else if (message === "2") {
       data.provider_vehicleType = "Open Truck";
       state = "provider_truck_size";
-      response = "🚛 Select *Truck Size*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open\n5️⃣ Other (Any other dimension)\n\nReply with *1 - 5*";
+      response = "🚛 Select *Truck Size*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open\n5️⃣ Other (Any other dimension)\n\nReply with *1 - 5*\n\n_(Reply *Back* to edit Category)_";
     } else if (message === "3") {
       data.provider_vehicleType = "Container";
       state = "provider_container_size";
-      response = "📦 Select *Container Size*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body\n5️⃣ Other (Any other dimension)\n\nReply with *1 - 5*";
+      response = "📦 Select *Container Size*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body\n5️⃣ Other (Any other dimension)\n\nReply with *1 - 5*\n\n_(Reply *Back* to edit Category)_";
     } else if (message === "4") {
       data.provider_vehicleType = "Trailer / ODC";
       state = "provider_trailer_size";
-      response = "🏗️ Select *Trailer / ODC Type*:\n1️⃣ 40 Ft High Bed\n2️⃣ 40 Ft Low Bed\n3️⃣ Semi Low Bed\n4️⃣ Hydraulic Axle\n5️⃣ Other (Any other dimension)\n\nReply with *1 - 5*";
+      response = "🏗️ Select *Trailer / ODC Type*:\n1️⃣ 40 Ft High Bed\n2️⃣ 40 Ft Low Bed\n3️⃣ Semi Low Bed\n4️⃣ Hydraulic Axle\n5️⃣ Other (Any other dimension)\n\nReply with *1 - 5*\n\n_(Reply *Back* to edit Category)_";
     } else {
       response =
         "❌ Invalid option.\n\nSelect Vehicle Category:\n" +
@@ -446,81 +639,77 @@ function processConversation(chat: any, masterRows: any[]) {
         "2️⃣ Open Truck\n" +
         "3️⃣ Container\n" +
         "4️⃣ Trailer / ODC\n\n" +
-        "Reply with *1, 2, 3 or 4*";
+        "Reply with *1, 2, 3 or 4*\n\n_(Reply *Back* to return to Main Menu)_";
     }
   } else if (state === "provider_tempo_size") {
-    const tempoMap: Record<string, string> = { "1": "7 Ft", "2": "8 Ft", "3": "9 Ft", "4": "14 Ft", "5": "17 Ft" };
     if (message === "6") {
       state = "provider_custom_size";
-      response = "📏 Enter your *Vehicle Dimensions / Size*:\n(e.g., 28 Ft, 45 Ft, Low Bed 50 Ton)";
-    } else if (tempoMap[message]) {
-      data.provider_vehicleSize = tempoMap[message];
+      response = "📏 Enter your *Vehicle Dimensions / Size*:\n(e.g., 28 Ft, 45 Ft, Low Bed 50 Ton)\n\n_(Reply *Back* to edit Tempo Size)_";
+    } else if (tempoSizeMap[message]) {
+      data.provider_vehicleSize = tempoSizeMap[message];
       state = "provider_vehicle_number";
-      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)";
+      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)\n\n_(Reply *Back* to edit Vehicle Size)_";
     } else {
-      response = "❌ Invalid choice. Reply with *1 - 6*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft\n6️⃣ Other (Any other dimension)";
+      response = "❌ Invalid choice. Reply with *1 - 6*:\n1️⃣ 7 Ft\n2️⃣ 8 Ft\n3️⃣ 9 Ft\n4️⃣ 14 Ft\n5️⃣ 17 Ft\n6️⃣ Other (Any other dimension)\n\n_(Reply *Back* to edit Category)_";
     }
   } else if (state === "provider_truck_size") {
-    const truckMap: Record<string, string> = { "1": "19 Ft Open", "2": "22 Ft Open", "3": "24 Ft Open", "4": "32 Ft Open" };
     if (message === "5") {
       state = "provider_custom_size";
-      response = "📏 Enter your *Vehicle Dimensions / Size*:\n(e.g., 28 Ft, 45 Ft, Low Bed 50 Ton)";
-    } else if (truckMap[message]) {
-      data.provider_vehicleSize = truckMap[message];
+      response = "📏 Enter your *Vehicle Dimensions / Size*:\n(e.g., 28 Ft, 45 Ft, Low Bed 50 Ton)\n\n_(Reply *Back* to edit Truck Size)_";
+    } else if (truckTypeMap[message]) {
+      data.provider_vehicleSize = truckTypeMap[message];
       state = "provider_vehicle_number";
-      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)";
+      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)\n\n_(Reply *Back* to edit Vehicle Size)_";
     } else {
-      response = "❌ Invalid choice. Reply with *1 - 5*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open\n5️⃣ Other (Any other dimension)";
+      response = "❌ Invalid choice. Reply with *1 - 5*:\n1️⃣ 19 Ft Open\n2️⃣ 22 Ft Open\n3️⃣ 24 Ft Open\n4️⃣ 32 Ft Open\n5️⃣ Other (Any other dimension)\n\n_(Reply *Back* to edit Category)_";
     }
   } else if (state === "provider_container_size") {
-    const containerMap: Record<string, string> = { "1": "20 Ft Close Body", "2": "24 Ft Close Body", "3": "32 Ft SXL Close Body", "4": "32 Ft MXL Close Body" };
     if (message === "5") {
       state = "provider_custom_size";
-      response = "📏 Enter your *Vehicle Dimensions / Size*:\n(e.g., 28 Ft, 45 Ft, Low Bed 50 Ton)";
-    } else if (containerMap[message]) {
-      data.provider_vehicleSize = containerMap[message];
+      response = "📏 Enter your *Vehicle Dimensions / Size*:\n(e.g., 28 Ft, 45 Ft, Low Bed 50 Ton)\n\n_(Reply *Back* to edit Container Size)_";
+    } else if (containerTypeMap[message]) {
+      data.provider_vehicleSize = containerTypeMap[message];
       state = "provider_vehicle_number";
-      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)";
+      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)\n\n_(Reply *Back* to edit Vehicle Size)_";
     } else {
-      response = "❌ Invalid choice. Reply with *1 - 5*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body\n5️⃣ Other (Any other dimension)";
+      response = "❌ Invalid choice. Reply with *1 - 5*:\n1️⃣ 20 Ft Close Body\n2️⃣ 24 Ft Close Body\n3️⃣ 32 Ft SXL Close Body\n4️⃣ 32 Ft MXL Close Body\n5️⃣ Other (Any other dimension)\n\n_(Reply *Back* to edit Category)_";
     }
   } else if (state === "provider_trailer_size") {
-    const trailerMap: Record<string, string> = { "1": "40 Ft High Bed", "2": "40 Ft Low Bed", "3": "Semi Low Bed", "4": "Hydraulic Axle" };
     if (message === "5") {
       state = "provider_custom_size";
-      response = "📏 Enter your *Vehicle Dimensions / Size*:\n(e.g., 28 Ft, 45 Ft, Low Bed 50 Ton)";
-    } else if (trailerMap[message]) {
-      data.provider_vehicleSize = trailerMap[message];
+      response = "📏 Enter your *Vehicle Dimensions / Size*:\n(e.g., 28 Ft, 45 Ft, Low Bed 50 Ton)\n\n_(Reply *Back* to edit Trailer Type)_";
+    } else if (trailerTypeMap[message]) {
+      data.provider_vehicleSize = trailerTypeMap[message];
       state = "provider_vehicle_number";
-      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)";
+      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)\n\n_(Reply *Back* to edit Vehicle Size)_";
     } else {
-      response = "❌ Invalid choice. Reply with *1 - 5*:\n1️⃣ 40 Ft High Bed\n2️⃣ 40 Ft Low Bed\n3️⃣ Semi Low Bed\n4️⃣ Hydraulic Axle\n5️⃣ Other (Any other dimension)";
+      response = "❌ Invalid choice. Reply with *1 - 5*:\n1️⃣ 40 Ft High Bed\n2️⃣ 40 Ft Low Bed\n3️⃣ Semi Low Bed\n4️⃣ Hydraulic Axle\n5️⃣ Other (Any other dimension)\n\n_(Reply *Back* to edit Category)_";
     }
   } else if (state === "provider_custom_size") {
     if (message.trim().length >= 2) {
       data.provider_vehicleSize = message.trim();
       state = "provider_vehicle_number";
-      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)";
+      response = "🔢 Enter *Vehicle Registration Number*:\n(e.g., MH 04 AB 1234)\n\n_(Reply *Back* to edit Vehicle Size)_";
     } else {
-      response = "❌ Invalid dimensions.\n\nPlease enter valid vehicle dimensions or size (e.g., 28 Ft, 45 Ft, Low Bed 50 Ton):";
+      response = "❌ Invalid dimensions.\n\nPlease enter valid vehicle dimensions or size (e.g., 28 Ft, 45 Ft, Low Bed 50 Ton):\n\n_(Reply *Back* to edit Previous Size)_";
     }
   } else if (state === "provider_vehicle_number") {
     const regRegex = /^([A-Z]{2}\s*[-]?\s*\d{2}\s*[-]?\s*[A-Z]{1,3}\s*[-]?\s*\d{4}|\d{2}\s*BH\s*\d{4}\s*[A-Z]{1,2})$/i;
     if (regRegex.test(message.trim())) {
       data.provider_vehicleNumber = message.trim().toUpperCase();
       state = "provider_driver_name";
-      response = "👤 Enter *Driver / Owner Name*:";
+      response = "👤 Enter *Driver / Owner Name*:\n\n_(Reply *Back* to edit Registration Number)_";
     } else {
-      response = "❌ Invalid Vehicle Registration Number.\n\nPlease enter a valid registration number (e.g., MH 04 AB 1234):";
+      response = "❌ Invalid Vehicle Registration Number.\n\nPlease enter a valid registration number (e.g., MH 04 AB 1234):\n\n_(Reply *Back* to edit Vehicle Size)_";
     }
   } else if (state === "provider_driver_name") {
     const hasLetters = /[a-zA-Z]{2,}/.test(message);
     if (hasLetters) {
       data.provider_driverName = message.trim();
       state = "provider_capacity";
-      response = "⚖️ Enter *Payload Capacity* (in Tons / Kgs):\n(e.g., 9 Tons or 2500 Kgs)";
+      response = "⚖️ Enter *Payload Capacity* (in Tons / Kgs):\n(e.g., 9 Tons or 2500 Kgs)\n\n_(Reply *Back* to edit Driver Name)_";
     } else {
-      response = "❌ Invalid name.\n\nPlease enter a valid Driver / Owner Name (e.g., Rahul Sharma):";
+      response = "❌ Invalid name.\n\nPlease enter a valid Driver / Owner Name (e.g., Rahul Sharma):\n\n_(Reply *Back* to edit Registration Number)_";
     }
   } else if (state === "provider_capacity") {
     const isLiquid = /(litre|liter|ml|gallon)/i.test(message);
@@ -529,9 +718,9 @@ function processConversation(chat: any, masterRows: any[]) {
     if (hasValidUnitOrNum) {
       data.provider_capacity = message.trim();
       state = "provider_routes";
-      response = "🛣️ Enter *Preferred Routes / Operating Cities*:\n(e.g., Mumbai - Ahmedabad - Delhi)";
+      response = "🛣️ Enter *Preferred Routes / Operating Cities*:\n(e.g., Mumbai - Ahmedabad - Delhi)\n\n_(Reply *Back* to edit Payload Capacity)_";
     } else {
-      response = "❌ Invalid payload capacity.\n\nPlease enter payload capacity in Tons or Kgs (e.g., 9 Tons, 2500 Kgs, 10 MT):";
+      response = "❌ Invalid payload capacity.\n\nPlease enter payload capacity in Tons or Kgs (e.g., 9 Tons, 2500 Kgs, 10 MT):\n\n_(Reply *Back* to edit Driver Name)_";
     }
   } else if (state === "provider_routes") {
     const hasLetters = /[a-zA-Z]{2,}/.test(message);
@@ -547,11 +736,13 @@ function processConversation(chat: any, masterRows: any[]) {
         `🛣️ *Routes:* ${data.provider_routes}\n\n` +
         "We will assign loads matching your routes and vehicle capacity! 🚛🤝";
     } else {
-      response = "❌ Invalid route.\n\nPlease enter operating routes or cities (e.g., Mumbai - Ahmedabad - Delhi):";
+      response = "❌ Invalid route.\n\nPlease enter operating routes or cities (e.g., Mumbai - Ahmedabad - Delhi):\n\n_(Reply *Back* to edit Capacity)_";
     }
   }
 
+  // =====================================================================
   // 4. CTA MENU ACTIONS
+  // =====================================================================
   else if (state === "cta_menu" || lowerMessage.startsWith("cta_")) {
     if (message === "cta_new" || lowerMessage === "post new order") {
       const newSessionId = `${phone}_${Date.now()}`;
@@ -653,11 +844,18 @@ serve(async (req: Request) => {
             continue;
           }
 
-          const phone = val.messages[0]?.from;
-          const msgText = val.messages[0]?.text?.body;
-          console.log(`Incoming message from ${phone}: "${msgText}"`);
+          const incomingMsg = val.messages[0];
+          const phone = incomingMsg?.from;
+          const msgId = incomingMsg?.id;
+          const msgText = incomingMsg?.text?.body;
+          console.log(`Incoming message from ${phone} (msgId: ${msgId}): "${msgText}"`);
 
-          // 1. Get existing session from Supabase (safe fallback)
+          // 1. Send WhatsApp typing indicator immediately in background (gives blue ticks + typing animation)
+          if (msgId) {
+            sendWhatsAppTypingIndicator(phone, msgId).catch((e) => console.warn("Typing indicator error:", e));
+          }
+
+          // 2. Get existing session from Supabase
           let masterRows: any[] = [];
           try {
             const { data } = await supabase
@@ -669,11 +867,11 @@ serve(async (req: Request) => {
             console.warn("Failed to fetch master row from Supabase:", dbErr);
           }
 
-          // 2. Process state machine
+          // 3. Process state machine (with universal Back & Validation support)
           const output = processConversation(val, masterRows);
           console.log(`Next state: "${output.state}", response: "${output.response?.slice(0, 30)}..."`);
 
-          // 3. Send WhatsApp reply FIRST so user always gets the reply immediately
+          // 4. Send WhatsApp reply
           try {
             if (output.response) {
               await sendWhatsAppText(output.phone, output.response);
@@ -687,7 +885,7 @@ serve(async (req: Request) => {
             console.error("Error sending WhatsApp message:", waErr);
           }
 
-          // 4. Upsert session to Supabase in background
+          // 5. Upsert session and cleared/updated data to Supabase
           try {
             await supabase.from("users_master").upsert({
               user_id: output.user_id,
