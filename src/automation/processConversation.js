@@ -135,7 +135,25 @@ function processConversation(waMessagePayload, masterRows) {
 
   // ================= MAIN MENU =================
   if (state === 'main_menu') {
-    if (message === '1') {
+    const isBookChoice =
+      lowerMessage === '1' ||
+      lowerMessage === '1️⃣' ||
+      ['book', 'customer', 'booking', 'book vehicle', 'book a vehicle'].includes(lowerMessage) ||
+      /\b(book|customer)\b/i.test(lowerMessage);
+
+    const isProvideChoice =
+      lowerMessage === '2' ||
+      lowerMessage === '2️⃣' ||
+      ['provide', 'transporter', 'provider', 'provide vehicle', 'provide a vehicle'].includes(lowerMessage) ||
+      /\b(provide|transporter)\b/i.test(lowerMessage);
+
+    const isSupportChoice =
+      lowerMessage === '3' ||
+      lowerMessage === '3️⃣' ||
+      ['support', 'help'].includes(lowerMessage) ||
+      /\b(support|help)\b/i.test(lowerMessage);
+
+    if (isBookChoice) {
       state = 'route_details';
       data.flowType = 'book';
       response =
@@ -145,7 +163,7 @@ function processConversation(waMessagePayload, masterRows) {
         'Example:\n' +
         '400701\n' +
         '110020';
-    } else if (message === '2') {
+    } else if (isProvideChoice) {
       data.flowType = 'provider';
       state = 'vp1_basic_details';
       response =
@@ -155,7 +173,7 @@ function processConversation(waMessagePayload, masterRows) {
         'Example:\n' +
         'Rahul Sharma\n' +
         '9876543210';
-    } else if (message === '3') {
+    } else if (isSupportChoice) {
       state = 'support_flow';
       data.flowType = 'support';
       response =

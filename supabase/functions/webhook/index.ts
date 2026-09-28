@@ -472,11 +472,29 @@ async function processConversation(chat: any, masterRows: any[]) {
   // 1. MAIN MENU
   // =====================================================================
   if (state === "main_menu") {
-    if (message === "1") {
+    const isBookChoice =
+      lowerMessage === "1" ||
+      lowerMessage === "1️⃣" ||
+      ["book", "customer", "booking", "book vehicle", "book a vehicle"].includes(lowerMessage) ||
+      /\b(book|customer)\b/i.test(lowerMessage);
+
+    const isProvideChoice =
+      lowerMessage === "2" ||
+      lowerMessage === "2️⃣" ||
+      ["provide", "transporter", "provider", "provide vehicle", "provide a vehicle"].includes(lowerMessage) ||
+      /\b(provide|transporter)\b/i.test(lowerMessage);
+
+    const isSupportChoice =
+      lowerMessage === "3" ||
+      lowerMessage === "3️⃣" ||
+      ["support", "help"].includes(lowerMessage) ||
+      /\b(support|help)\b/i.test(lowerMessage);
+
+    if (isBookChoice) {
       state = "loading_pin";
       flowType = "book";
       response = "📍 Enter *Loading Pincode* (6 digits):\n(e.g., 400001)\n\n_(Reply *Back* to return to Main Menu)_";
-    } else if (message === "2") {
+    } else if (isProvideChoice) {
       state = "provider_vehicle_type";
       flowType = "provider";
       response =
@@ -487,7 +505,7 @@ async function processConversation(chat: any, masterRows: any[]) {
         "3️⃣ Container\n" +
         "4️⃣ Trailer / ODC\n\n" +
         "Reply with *1, 2, 3 or 4*\n\n_(Reply *Back* to return to Main Menu)_";
-    } else if (message === "3") {
+    } else if (isSupportChoice) {
       state = "support";
       flowType = "support";
       response =
