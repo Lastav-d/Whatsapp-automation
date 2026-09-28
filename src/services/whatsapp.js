@@ -61,4 +61,46 @@ async function sendCtaButtons(to) {
   });
 }
 
-module.exports = { sendText, sendCtaButtons };
+/**
+ * Sends a native WhatsApp Flow with in-app DatePicker calendar.
+ */
+async function sendFlowDatePicker(to, flowId, minDate) {
+  const today = minDate || new Date().toISOString().split('T')[0];
+  return callGraphApi({
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'flow',
+      header: {
+        type: 'text',
+        text: '📅 Loading Date',
+      },
+      body: {
+        text: 'Tap below to open the calendar and choose your vehicle loading date:',
+      },
+      footer: {
+        text: 'Traket Transport',
+      },
+      action: {
+        name: 'flow',
+        parameters: {
+          flow_message_version: '3',
+          flow_token: `flow_${to}_${Date.now()}`,
+          flow_id: flowId,
+          flow_cta: '📅 Select Date',
+          flow_action: 'navigate',
+          flow_action_payload: {
+            screen: 'DATE_SELECTION',
+            data: {
+              min_date: today,
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+module.exports = { sendText, sendCtaButtons, sendFlowDatePicker };

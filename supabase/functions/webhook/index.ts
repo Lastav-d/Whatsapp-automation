@@ -11,6 +11,7 @@ const WHATSAPP_PHONE_NUMBER_ID = (Deno.env.get("WHATSAPP_PHONE_NUMBER_ID") || ""
 const WHATSAPP_APP_SECRET = (Deno.env.get("WHATSAPP_APP_SECRET") || "").trim();
 const WHATSAPP_VERIFY_TOKEN = (Deno.env.get("WHATSAPP_VERIFY_TOKEN") || "").trim();
 const GRAPH_API_VERSION = Deno.env.get("WHATSAPP_GRAPH_API_VERSION") || "v20.0";
+const WHATSAPP_FLOW_ID = (Deno.env.get("WHATSAPP_FLOW_ID") || "").trim();
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
@@ -181,6 +182,62 @@ async function sendWhatsAppCtaUrlButton(to: string) {
   return data;
 }
 
+async function sendWhatsAppFlowDatePicker(to: string, flowId: string, minDate?: string) {
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+  const today = minDate || new Date().toISOString().split("T")[0];
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "flow",
+        header: {
+          type: "text",
+          text: "📅 Loading Date",
+        },
+        body: {
+          text: "Tap the button below to open the calendar and choose your vehicle loading date:",
+        },
+        footer: {
+          text: "Traket Transport",
+        },
+        action: {
+          name: "flow",
+          parameters: {
+            flow_message_version: "3",
+            flow_token: `flow_${to}_${Date.now()}`,
+            flow_id: flowId,
+            flow_cta: "📅 Select Date",
+            flow_action: "navigate",
+            flow_action_payload: {
+              screen: "DATE_SELECTION",
+              data: {
+                min_date: today,
+              },
+            },
+          },
+        },
+      },
+    }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.error("❌ WhatsApp Flow API error:", { status: res.status, data });
+    throw new Error(`Flow API error: ${JSON.stringify(data)}`);
+  } else {
+    console.log("✅ WhatsApp Flow DatePicker sent:", data);
+  }
+  return data;
+}
+
 // =====================================================================
 // HMAC SIGNATURE VERIFICATION
 // =====================================================================
@@ -216,7 +273,18 @@ async function processConversation(chat: any, masterRows: any[]) {
   if (msg?.type === "text") {
     rawMessage = msg.text?.body || "";
   } else if (msg?.type === "interactive") {
-    rawMessage = msg.interactive?.button_reply?.id || "";
+    if (msg.interactive?.button_reply) {
+      rawMessage = msg.interactive.button_reply.id || "";
+    } else if (msg.interactive?.list_reply) {
+      rawMessage = msg.interactive.list_reply.id || "";
+    } else if (msg.interactive?.nfm_reply) {
+      try {
+        const flowResponse = JSON.parse(msg.interactive.nfm_reply.response_json || "{}");
+        rawMessage = flowResponse.selected_date || flowResponse.loading_date || flowResponse.date || "";
+      } catch {
+        rawMessage = msg.interactive.nfm_reply.response_json || "";
+      }
+    }
   }
 
   if (typeof rawMessage === "object") {
@@ -269,12 +337,25 @@ async function processConversation(chat: any, masterRows: any[]) {
   const containerTypeMap: Record<string, string> = { "1": "20 Ft Close Body", "2": "24 Ft Close Body", "3": "32 Ft SXL Close Body", "4": "32 Ft MXL Close Body" };
   const trailerTypeMap: Record<string, string> = { "1": "40 Ft High Bed", "2": "40 Ft Low Bed", "3": "Semi Low Bed", "4": "Hydraulic Axle" };
 
-  function validateLoadingDate(dateStr: string): { valid: boolean; reason?: "format" | "past" } {
-    const match = dateStr.trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-    if (!match) return { valid: false, reason: "format" };
-    const day = parseInt(match[1], 10);
-    const month = parseInt(match[2], 10);
-    const year = parseInt(match[3], 10);
+  function validateLoadingDate(dateStr: string): { valid: boolean; reason?: "format" | "past"; formatted?: string } {
+    let day = 0, month = 0, year = 0;
+    const clean = dateStr.trim();
+
+    // Check ISO YYYY-MM-DD from WhatsApp Flow DatePicker
+    const isoMatch = clean.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoMatch) {
+      year = parseInt(isoMatch[1], 10);
+      month = parseInt(isoMatch[2], 10);
+      day = parseInt(isoMatch[3], 10);
+    } else {
+      // Check DD/MM/YYYY or DD-MM-YYYY format
+      const match = clean.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/);
+      if (!match) return { valid: false, reason: "format" };
+      day = parseInt(match[1], 10);
+      month = parseInt(match[2], 10);
+      year = parseInt(match[3], 10);
+    }
+
     if (month < 1 || month > 12) return { valid: false, reason: "format" };
     if (day < 1 || day > 31) return { valid: false, reason: "format" };
     const daysInMonth = new Date(year, month, 0).getDate();
@@ -288,7 +369,9 @@ async function processConversation(chat: any, masterRows: any[]) {
     if (inputDate < today) {
       return { valid: false, reason: "past" };
     }
-    return { valid: true };
+
+    const formatted = `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}/${year}`;
+    return { valid: true, formatted };
   }
 
   let state = row.state || "start";
@@ -472,11 +555,29 @@ async function processConversation(chat: any, masterRows: any[]) {
   // 1. MAIN MENU
   // =====================================================================
   if (state === "main_menu") {
-    if (message === "1") {
+    const isBookChoice =
+      lowerMessage === "1" ||
+      lowerMessage === "1️⃣" ||
+      ["book", "customer", "booking", "book vehicle", "book a vehicle"].includes(lowerMessage) ||
+      /\b(book|customer)\b/i.test(lowerMessage);
+
+    const isProvideChoice =
+      lowerMessage === "2" ||
+      lowerMessage === "2️⃣" ||
+      ["provide", "transporter", "provider", "provide vehicle", "provide a vehicle"].includes(lowerMessage) ||
+      /\b(provide|transporter)\b/i.test(lowerMessage);
+
+    const isSupportChoice =
+      lowerMessage === "3" ||
+      lowerMessage === "3️⃣" ||
+      ["support", "help"].includes(lowerMessage) ||
+      /\b(support|help)\b/i.test(lowerMessage);
+
+    if (isBookChoice) {
       state = "loading_pin";
       flowType = "book";
       response = "📍 Enter *Loading Pincode* (6 digits):\n(e.g., 400001)\n\n_(Reply *Back* to return to Main Menu)_";
-    } else if (message === "2") {
+    } else if (isProvideChoice) {
       state = "provider_vehicle_type";
       flowType = "provider";
       response =
@@ -487,7 +588,7 @@ async function processConversation(chat: any, masterRows: any[]) {
         "3️⃣ Container\n" +
         "4️⃣ Trailer / ODC\n\n" +
         "Reply with *1, 2, 3 or 4*\n\n_(Reply *Back* to return to Main Menu)_";
-    } else if (message === "3") {
+    } else if (isSupportChoice) {
       state = "support";
       flowType = "support";
       response =
@@ -619,7 +720,7 @@ async function processConversation(chat: any, masterRows: any[]) {
   } else if (state === "loading_date") {
     const dateCheck = validateLoadingDate(message);
     if (dateCheck.valid) {
-      data.loadingDate = message.trim();
+      data.loadingDate = dateCheck.formatted || message.trim();
       state = "loading_time";
       response =
         "⏰ Select or Enter *Loading Time*:\n\n" +
@@ -944,9 +1045,19 @@ serve(async (req: Request) => {
 
           // 4. Send WhatsApp reply
           try {
-            if (output.response) {
+            if (output.state === "loading_date" && WHATSAPP_FLOW_ID) {
+              try {
+                await sendWhatsAppFlowDatePicker(output.phone, WHATSAPP_FLOW_ID);
+              } catch (flowErr) {
+                console.warn("Failed to send WhatsApp Flow DatePicker, falling back to text:", flowErr);
+                if (output.response) {
+                  await sendWhatsAppText(output.phone, output.response);
+                }
+              }
+            } else if (output.response) {
               await sendWhatsAppText(output.phone, output.response);
             }
+
             if (output.state === "cta_ai") {
               await sendWhatsAppCtaUrlButton(output.phone);
             } else if (output.state === "cta_menu") {

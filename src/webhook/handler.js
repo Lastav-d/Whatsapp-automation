@@ -1,3 +1,4 @@
+const config = require('../config');
 const { processConversation } = require('../automation/processConversation');
 const db = require('../services/supabase');
 const whatsapp = require('../services/whatsapp');
@@ -135,8 +136,17 @@ async function handleIncomingMessage(value) {
   // "Switch" -> per-flow sheet upsert
   await persistToFlowSheet(output);
 
-  // "Send message1-summary"
-  await whatsapp.sendText(output.phone, output.response);
+  // "Send message1-summary" (or Flow calendar if state is loading_date and flowId configured)
+  if (output.state === 'loading_date' && config.whatsapp.flowId) {
+    try {
+      await whatsapp.sendFlowDatePicker(output.phone, config.whatsapp.flowId);
+    } catch (flowErr) {
+      logger.warn('Failed to send WhatsApp Flow DatePicker, falling back to text', flowErr);
+      await whatsapp.sendText(output.phone, output.response);
+    }
+  } else if (output.response) {
+    await whatsapp.sendText(output.phone, output.response);
+  }
 
   // "If1" -> "HTTP Request" (CTA buttons shown after a flow completes)
   if (output.state === 'cta_menu') {
