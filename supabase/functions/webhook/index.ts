@@ -15,6 +15,41 @@ const GRAPH_API_VERSION = Deno.env.get("WHATSAPP_GRAPH_API_VERSION") || "v20.0";
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // =====================================================================
+// INDIA POSTAL PINCODE VALIDATOR API
+// =====================================================================
+async function lookupPostalPinCode(pincode: string): Promise<{ valid: boolean; location?: string; district?: string; state?: string; error?: string }> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(`https://api.postalpincode.in/pincode/${pincode.trim()}`, { signal: controller.signal });
+    clearTimeout(timeout);
+
+    const data = await res.json();
+    if (Array.isArray(data) && data[0]?.Status === "Success" && Array.isArray(data[0]?.PostOffice) && data[0].PostOffice.length > 0) {
+      const po = data[0].PostOffice[0];
+      const name = String(po.Name || "").trim();
+      const district = String(po.District || "").trim();
+      const state = String(po.State || "").trim();
+      const label = (name && district && name.toLowerCase() !== district.toLowerCase())
+        ? `${name}, ${district} (${state})`
+        : `${district || name} (${state})`;
+
+      return {
+        valid: true,
+        location: label,
+        district: district || name,
+        state: state,
+      };
+    }
+    return { valid: false, error: "Pincode not found" };
+  } catch (err) {
+    console.warn(`Postal code API fallback for ${pincode}:`, err);
+    // Safe network fallback so valid requests are never blocked if 3rd-party is temporarily down
+    return { valid: true, location: `PIN ${pincode}`, district: "India", state: "India" };
+  }
+}
+
+// =====================================================================
 // WHATSAPP API HELPERS
 // =====================================================================
 async function sendWhatsAppTypingIndicator(to: string, messageId?: string) {
@@ -174,7 +209,7 @@ async function isValidSignature(rawBody: string, signatureHeader: string | null)
 // =====================================================================
 // CONVERSATION STATE MACHINE
 // =====================================================================
-function processConversation(chat: any, masterRows: any[]) {
+async function processConversation(chat: any, masterRows: any[]) {
   let rawMessage = "";
   const msg = chat.messages?.[0];
 
@@ -287,10 +322,16 @@ function processConversation(chat: any, masterRows: any[]) {
     // Customer Booking Flow - Step Back
     else if (state === "unloading_pin") {
       delete data.loadingPin;
+      delete data.loadingLocation;
+      delete data.loadingDistrict;
+      delete data.loadingState;
       state = "loading_pin";
       response = "📍 Enter *Loading Pincode* (6 digits):\n(e.g., 400001)\n\n_(Reply *Back* to return to Main Menu)_";
     } else if (state === "cargo_type") {
       delete data.unloadingPin;
+      delete data.unloadingLocation;
+      delete data.unloadingDistrict;
+      delete data.unloadingState;
       state = "unloading_pin";
       response = "📍 Enter *Unloading Pincode* (6 digits):\n(e.g., 560001)\n\n_(Reply *Back* to edit Loading Pincode)_";
     } else if (state === "vehicle_type") {
@@ -461,23 +502,53 @@ function processConversation(chat: any, masterRows: any[]) {
   }
 
   // =====================================================================
-  // 2. BOOK VEHICLE FLOW
+  // 2. BOOK VEHICLE FLOW (WITH POSTAL CODE VALIDATION)
   // =====================================================================
   else if (state === "loading_pin") {
     if (/^\d{6}$/.test(message)) {
-      data.loadingPin = message;
-      state = "unloading_pin";
-      response = "📍 Enter *Unloading Pincode* (6 digits):\n(e.g., 560001)\n\n_(Reply *Back* to edit Loading Pincode)_";
+      const pinResult = await lookupPostalPinCode(message);
+      if (pinResult.valid) {
+        data.loadingPin = message;
+        data.loadingLocation = pinResult.location;
+        data.loadingDistrict = pinResult.district;
+        data.loadingState = pinResult.state;
+        state = "unloading_pin";
+        response =
+          `✅ *Loading Location:* ${pinResult.location}\n\n` +
+          `📍 Enter *Unloading Pincode* (6 digits):\n(e.g., 560001)\n\n` +
+          `_(Reply *Back* to edit Loading Pincode)_`;
+      } else {
+        response =
+          `❌ *Pincode Not Found:* No postal records found for *${message}* in India.\n\n` +
+          `Please enter a valid *6-digit Loading Pincode*:\n(e.g., 400001)\n\n` +
+          `_(Reply *Back* to return to Main Menu)_`;
+      }
     } else {
-      response = "❌ Invalid pincode. Please enter a valid *6-digit* Loading Pincode:\n(e.g., 400001)\n\n_(Reply *Back* to return to Main Menu)_";
+      response = "❌ Invalid pincode format. Please enter a valid *6-digit* Loading Pincode:\n(e.g., 400001)\n\n_(Reply *Back* to return to Main Menu)_";
     }
   } else if (state === "unloading_pin") {
     if (/^\d{6}$/.test(message)) {
-      data.unloadingPin = message;
-      state = "cargo_type";
-      response = "📦 Select *Cargo Type*:\n1️⃣ Domestic\n2️⃣ Import\n3️⃣ Export\n\nReply with *1, 2 or 3*\n\n_(Reply *Back* to edit Unloading Pincode)_";
+      const pinResult = await lookupPostalPinCode(message);
+      if (pinResult.valid) {
+        data.unloadingPin = message;
+        data.unloadingLocation = pinResult.location;
+        data.unloadingDistrict = pinResult.district;
+        data.unloadingState = pinResult.state;
+        state = "cargo_type";
+        response =
+          `✅ *Unloading Location:* ${pinResult.location}\n` +
+          `🛣️ *Route:* ${data.loadingDistrict || data.loadingPin} ➔ ${pinResult.district || message}\n\n` +
+          `📦 Select *Cargo Type*:\n1️⃣ Domestic\n2️⃣ Import\n3️⃣ Export\n\n` +
+          `Reply with *1, 2 or 3*\n\n` +
+          `_(Reply *Back* to edit Unloading Pincode)_`;
+      } else {
+        response =
+          `❌ *Pincode Not Found:* No postal records found for *${message}* in India.\n\n` +
+          `Please enter a valid *6-digit Unloading Pincode*:\n(e.g., 560001)\n\n` +
+          `_(Reply *Back* to edit Loading Pincode)_`;
+      }
     } else {
-      response = "❌ Invalid pincode. Please enter a valid *6-digit* Unloading Pincode:\n(e.g., 560001)\n\n_(Reply *Back* to edit Loading Pincode)_";
+      response = "❌ Invalid pincode format. Please enter a valid *6-digit* Unloading Pincode:\n(e.g., 560001)\n\n_(Reply *Back* to edit Loading Pincode)_";
     }
   } else if (state === "cargo_type") {
     if (["1", "2", "3"].includes(message)) {
@@ -599,7 +670,7 @@ function processConversation(chat: any, masterRows: any[]) {
       state = "cta_menu";
       response =
         "✅ *Booking Request Submitted Successfully!*\n\n" +
-        `📍 *Route:* ${data.loadingPin} ➔ ${data.unloadingPin}\n` +
+        `📍 *Route:* ${data.loadingPin} (${data.loadingLocation || "Origin"}) ➔ ${data.unloadingPin} (${data.unloadingLocation || "Destination"})\n` +
         `📦 *Cargo:* ${data.cargoType}\n` +
         `🚛 *Vehicle:* ${data.vehicleType} (${data.vehicleSubType || "Standard"})\n` +
         `📝 *Material:* ${data.material}\n` +
@@ -867,8 +938,8 @@ serve(async (req: Request) => {
             console.warn("Failed to fetch master row from Supabase:", dbErr);
           }
 
-          // 3. Process state machine (with universal Back & Validation support)
-          const output = processConversation(val, masterRows);
+          // 3. Process state machine with asynchronous postal PIN validation
+          const output = await processConversation(val, masterRows);
           console.log(`Next state: "${output.state}", response: "${output.response?.slice(0, 30)}..."`);
 
           // 4. Send WhatsApp reply
